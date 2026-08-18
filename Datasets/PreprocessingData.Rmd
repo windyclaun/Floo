@@ -1,0 +1,387 @@
+---
+title: "Preprocessing Data"
+author: "Windy"
+date: "2026-08-14"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+library(tidyverse)
+library(stringr)
+```
+
+
+```{r}
+# 1. Baca data & ganti placeholder ("-", "---", "no input") menjadi NA secara langsung
+cropbasics <- read_csv(
+  "cropbasics_scrape.csv", 
+  col_types = cols(.default = "c")
+)
+```
+
+```{r}
+cat("\n=== 1. HASIL PEMBERSIHAN PLACEHOLDER ('-', '---', 'no input') ===\n")
+
+# Hitung jumlah placeholder sebelum dibersihkan
+placeholders <- c("-", "---", "no input")
+total_placeholder <- sum(as.matrix(cropbasics) %in% placeholders, na.rm = TRUE)
+cat("Total nilai placeholder yang ditemukan dan diubah ke NA:", total_placeholder, "\n")
+
+# Ubah placeholder menjadi NA
+cropbasics <- cropbasics %>%
+  mutate(across(everything(), ~ ifelse(.x %in% placeholders, NA_character_, .x)))
+```
+
+```{r}
+cat("\n=== 2. HASIL KONVERSI & RINGKASAN STATISTIK KOLOM NUMERIK ===\n")
+
+num_cols <- c(
+  "temp_opt_min", "Temp_Opt_Max", "Temp_Abs_Min", "Temp_Abs_Max",
+  "Rain_Opt_Min", "Rain_Opt_Max", "Rain_Abs_Min", "Rain_Abs_Max",
+  "pH_Opt_Min", "pH_Opt_Max", "pH_Abs_Min", "pH_Abs_Max",
+  "Lat_Opt_Min", "Lat_Opt_Max", "Lat_Abs_Min", "Lat_Abs_Max",
+  "Alt_Opt_Min", "Alt_Opt_Max", "Alt_Abs_Min", "Alt_Abs_Max",
+  "cycle_min", "cycle_max"
+)
+
+# Hapus koma pada ribuan dan konversi ke numeric
+cropbasics <- cropbasics %>%
+  mutate(across(all_of(num_cols), ~ as.numeric(gsub(",", "", .x))))
+
+# Tampilkan ringkasan statistik (min, mean, max, NA's) beberapa kolom numerik utama
+sample_num_cols <- c("temp_opt_min", "Temp_Opt_Max", "Rain_Opt_Min", "Rain_Opt_Max", "pH_Opt_Min", "pH_Opt_Max", "cycle_min", "cycle_max")
+print(summary(cropbasics[sample_num_cols]))
+```
+
+```{r}
+cat("\n=== 3. PERSENTASE KOSONG (NA) KOLOM DENGAN MISSING VALUE EKSTREM ===\n")
+
+cols_high_missing <- c(
+  "Al_Toxicity_Opt", "Al_Toxicity_Abs", 
+  "Abiotic.toler.", "Abiotic.suscept.", 
+  "Introduction.risks.", "Product..system"
+)
+
+# Hitung dan tampilkan persentase missing value
+missing_pct <- cropbasics %>%
+  summarise(across(all_of(cols_high_missing), ~ round(mean(is.na(.x)) * 100, 2))) %>%
+  pivot_longer(cols = everything(), names_to = "Nama_Kolom", values_to = "Persen_NA (%)")
+
+print(as.data.frame(missing_pct))
+```
+
+```{r}
+cat("\n=== 4. NILAI UNIK KOLOM KONSTAN (SEBELUM DIHAPUS) ===\n")
+
+cols_constant <- c(
+  "Cropping.system", "Subsystem", 
+  "Companion.species", "Level.of.mechanization", "Labour.intensity"
+)
+
+# Tampilkan nilai unik dari kolom-kolom konstan
+unique_vals <- cropbasics %>%
+  summarise(across(all_of(cols_constant), ~ paste(unique(na.omit(.x)), collapse = ", "))) %>%
+  pivot_longer(cols = everything(), names_to = "Nama_Kolom", values_to = "Nilai_Unik")
+
+print(as.data.frame(unique_vals))
+```
+
+```{r}
+cols_to_drop <- c(cols_high_missing, cols_constant)
+
+cropbasics_clean <- cropbasics %>%
+  select(-any_of(cols_to_drop))
+
+# Simpan dataset yang sudah bersih
+write_csv(cropbasics_clean, "cropbasics_clean.csv")
+
+cat("\n======================================================================\n")
+cat("Pembersihan selesai! Dimensi akhir dataset (Baris x Kolom):", dim(cropbasics_clean)[1], "x", dim(cropbasics_clean)[2], "\n")
+cat("File disimpan dengan nama 'cropbasics_clean.csv'\n")
+cat("======================================================================\n")
+```
+
+
+
+```{r}
+crop_view <- read_csv("crop_view_data.csv", col_types = cols(.default = "c"))
+```
+
+
+```{r}
+cat("\n=== 1. STANDARDISASI NAMA ID TANAMAN ===\n")
+
+crop_view <- crop_view %>%
+  rename(crop_code = Ecocrop_code)
+
+cat("Nama kolom 'Ecocrop_code' berhasil diubah menjadi 'crop_code'.\n")
+cat("Daftar 3 kolom pertama saat ini:", paste(colnames(crop_view)[1:3], collapse = ", "), "\n")
+```
+
+```{r}
+cat("\n=== 2. HAPUS KOLOM KOSONG (Editor) ===\n")
+
+na_editor_count <- sum(is.na(crop_view$Editor))
+cat("Jumlah baris kosong (NA) pada kolom Editor:", na_editor_count, "dari", nrow(crop_view), "baris.\n")
+
+crop_view <- crop_view %>%
+  select(-Editor)
+
+cat("Kolom 'Editor' berhasil dihapus dari dataset.\n")
+```
+
+```{r}
+cat("\n=== 3. PEMBERSIHAN & EKSTRAKSI TEKS ===\n")
+
+# A. EKSTRAKSI FAMILI UTAMA (Kolom Family)
+# Mengambil nama famili paling akhir dari hirarki berpemisah titik dua (:)
+crop_view <- crop_view %>%
+  mutate(Family_Clean = str_extract(Family, "[^:]+$") %>% str_trim())
+
+cat("a) Ekstraksi Kolom Family:\n")
+cat("   - Jumlah Famili unik yang diekstrak:", n_distinct(crop_view$Family_Clean, na.rm = TRUE), "\n")
+cat("   - Contoh hasil ekstraksi 5 baris pertama:\n")
+print(head(crop_view %>% select(Family, Family_Clean), 5))
+```
+
+```{r}
+# B. PARSING SEKSI PADA KOLOM NOTES
+# Memecah teks deskripsi panjang menjadi kolom-kolom spesifik menggunakan Regex
+crop_view <- crop_view %>%
+  mutate(
+    Notes_Brief = str_match(Notes, "BRIEF DESCRIPTION\\s+(.*?)(?=\\s+(USES|GROWING PERIOD|COMMON NAMES|FURTHER INF|SOURCES)|$)")[,2],
+    Notes_Uses = str_match(Notes, "USES\\s+(.*?)(?=\\s+(GROWING PERIOD|COMMON NAMES|FURTHER INF|SOURCES)|$)")[,2],
+    Notes_Growing = str_match(Notes, "GROWING PERIOD\\s+(.*?)(?=\\s+(COMMON NAMES|FURTHER INF|SOURCES)|$)")[,2],
+    Notes_Further_Inf = str_match(Notes, "FURTHER INF\\s+(.*?)(?=\\s+(SOURCES)|$)")[,2]
+  )
+
+cat("\nb) Parsing Seksi Kolom Notes:\n")
+cat("   - Baris terisi pada Brief Description :", sum(!is.na(crop_view$Notes_Brief)), "\n")
+cat("   - Baris terisi pada Uses Notes        :", sum(!is.na(crop_view$Notes_Uses)), "\n")
+cat("   - Baris terisi pada Growing Period    :", sum(!is.na(crop_view$Notes_Growing)), "\n")
+cat("   - Baris terisi pada Further Info      :", sum(!is.na(crop_view$Notes_Further_Inf)), "\n")
+```
+
+```{r}
+# C. PENANGANAN MISSING VALUE DAN RAPIKAN TEKS (Common_names & Synonyms)
+# Mengisi NA dengan "Unspecified" dan membersihkan spasi berlebih
+crop_view <- crop_view %>%
+  mutate(
+    Common_names = ifelse(is.na(Common_names), "Unspecified", str_squish(Common_names)),
+    Synonyms = ifelse(is.na(Synonyms), "Unspecified", str_squish(Synonyms))
+  )
+
+cat("\nc) Penanganan Missing Value pada Common_names & Synonyms:\n")
+cat("   - Sisa NA pada Common_names :", sum(is.na(crop_view$Common_names)), "(Diubah menjadi 'Unspecified')\n")
+cat("   - Sisa NA pada Synonyms     :", sum(is.na(crop_view$Synonyms)), "(Diubah menjadi 'Unspecified')\n")
+```
+
+```{r}
+write_csv(crop_view, "crop_view_clean.csv")
+
+cat("\n======================================================================\n")
+cat("Pembersihan selesai! Dimensi akhir dataset (Baris x Kolom):", dim(crop_view)[1], "x", dim(crop_view)[2], "\n")
+cat("File berhasil disimpan dengan nama 'crop_view_clean.csv'\n")
+cat("======================================================================\n")
+```
+
+
+
+
+```{r}
+crop_uses <- read_csv("crop_uses.csv", col_types = cols(.default = "c"))
+```
+
+```{r}
+cat("\n=== 1. PENANGANAN MISSING VALUE (NA) ===\n")
+
+na_detailed_before <- sum(is.na(crop_uses$`Detailed use`))
+na_part_before     <- sum(is.na(crop_uses$`Used part`))
+
+cat("Jumlah NA sebelum diperbaiki:\n")
+cat("   - Detailed use :", na_detailed_before, "baris kosong\n")
+cat("   - Used part    :", na_part_before, "baris kosong\n")
+
+# Mengisi missing value dengan "Unspecified"
+crop_uses <- crop_uses %>%
+  mutate(
+    `Main use`     = ifelse(is.na(`Main use`), "Unspecified", `Main use`),
+    `Detailed use` = ifelse(is.na(`Detailed use`), "Unspecified", `Detailed use`),
+    `Used part`    = ifelse(is.na(`Used part`), "Unspecified", `Used part`)
+  )
+
+cat("\nHasil setelah diisi tag 'Unspecified':\n")
+cat("   - Sisa NA Detailed use :", sum(is.na(crop_uses$`Detailed use`)), "\n")
+cat("   - Sisa NA Used part    :", sum(is.na(crop_uses$`Used part`)), "\n")
+```
+
+```{r}
+cat("\n=== 2. AGREGASI DATA DENGAN GROUP BY (crop_code) ===\n")
+
+cat("Jumlah total baris awal (sebelum agregasi) :", nrow(crop_uses), "baris\n")
+cat("Jumlah ID Tanaman unik (crop_code)          :", n_distinct(crop_uses$crop_code), "tanaman\n")
+
+# Mengelompokkan berdasarkan crop_code dan menggabungkan nilai unik dipisah koma
+crop_uses_aggregated <- crop_uses %>%
+  group_by(crop_code) %>%
+  summarise(
+    Main_use_aggregated     = paste(sort(unique(`Main use`)), collapse = ", "),
+    Detailed_use_aggregated = paste(sort(unique(`Detailed use`)), collapse = ", "),
+    Used_part_aggregated     = paste(sort(unique(`Used part`)), collapse = ", "),
+    .groups = "drop"
+  )
+
+cat("\nJumlah total baris setelah agregasi         :", nrow(crop_uses_aggregated), "baris\n")
+
+cat("\nContoh 3 baris pertama data hasil agregasi:\n")
+print(head(crop_uses_aggregated, 3))
+```
+
+```{r}
+write_csv(crop_uses_aggregated, "crop_uses_clean_aggregated.csv")
+
+cat("\n======================================================================\n")
+cat("Pembersihan selesai! Dimensi akhir dataset (Baris x Kolom):", dim(crop_uses_aggregated)[1], "x", dim(crop_uses_aggregated)[2], "\n")
+cat("File berhasil disimpan dengan nama 'crop_uses_clean_aggregated.csv'\n")
+cat("======================================================================\n")
+```
+
+
+
+
+```{r}
+# ------------------------------------------------------------------------------
+# 1. BACA KETIGA DATASET YANG SUDAH DIBERSIHKAN
+# ------------------------------------------------------------------------------
+# Pastikan file-file ini diproses/disimpan dari langkah 1, 2, dan 3 sebelumnya
+cropbasics <- read_csv("cropbasics_clean.csv", col_types = cols(.default = "c"))
+crop_view  <- read_csv("crop_view_clean.csv", col_types = cols(.default = "c"))
+crop_uses  <- read_csv("crop_uses_clean_aggregated.csv", col_types = cols(.default = "c"))
+
+# Pastikan tipe data kunci utama (crop_code) seragam (numeric/integer)
+cropbasics <- cropbasics %>% mutate(crop_code = as.integer(crop_code))
+crop_view  <- crop_view  %>% mutate(crop_code = as.integer(crop_code))
+crop_uses  <- crop_uses  %>% mutate(crop_code = as.integer(crop_code))
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# 2. PROSES LEFT JOIN BERDASARKAN KUNCI 'crop_code'
+# ------------------------------------------------------------------------------
+cat("\n=== MEMPROSES LEFT JOIN ===\n")
+
+# Merge Pertama: cropbasics + crop_view
+df_merged <- cropbasics %>%
+  left_join(crop_view, by = "crop_code", suffix = c("", "_view"))
+
+# Merge Kedua: + crop_uses
+df_final <- df_merged %>%
+  left_join(crop_uses, by = "crop_code")
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# 3. INSPEKSI HASIL PENGGABUNGAN
+# ------------------------------------------------------------------------------
+cat("\n=== HASIL STATISTIK PENGGABUNGAN ===\n")
+
+cat("1. Jumlah Baris Dataset Utama (cropbasics) :", nrow(cropbasics), "baris\n")
+cat("2. Jumlah Baris Setelah Penggabungan        :", nrow(df_final), "baris\n")
+cat("3. Jumlah Kolom Total Hasil Penggabungan    :", ncol(df_final), "kolom\n")
+
+# Cek persentase keberhasilan matching data
+match_view <- sum(!is.na(df_final$Family_Clean))
+match_uses <- sum(!is.na(df_final$Main_use_aggregated))
+
+cat("\nCek Tingkat Keberhasilan Matching (Data Match Rate):\n")
+cat("   - Berhasil match dengan crop_view_data :", match_view, "tanaman (", round(match_view/nrow(df_final)*100, 2), "% )\n")
+cat("   - Berhasil match dengan crop_uses      :", match_uses, "tanaman (", round(match_uses/nrow(df_final)*100, 2), "% )\n")
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# 4. PRATINJAU DATA HASIL MERGE
+# ------------------------------------------------------------------------------
+cat("\n=== CONTOH TAMPILAN BEBERAPA KOLOM HASIL MERGE ===\n")
+
+preview_cols <- c("crop_code", "species", "Family_Clean", "temp_opt_min", "Temp_Opt_Max", "Main_use_aggregated", "Used_part_aggregated")
+print(head(df_final %>% select(any_of(preview_cols)), 5))
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# 5. SIMPAN DATASET FINAL & TAMPILKAN MATRIKS DIMENSI
+# ------------------------------------------------------------------------------
+write_csv(df_final, "ecocrop_dataset_final_merged.csv")
+
+cat("\n======================================================================\n")
+cat("               INTEGRASI DAN PENGGABUNGAN DATASET SELESAI             \n")
+cat("======================================================================\n")
+cat(" - Matriks Dimensi Final (Baris x Kolom) :", paste(dim(df_final), collapse = " x "), "\n")
+cat(" - Total Baris (Observasi/Tanaman)      :", nrow(df_final), "baris\n")
+cat(" - Total Kolom (Variabel/Fitur)         :", ncol(df_final), "kolom\n")
+cat(" - Lokasi Penyimpanan File              : 'ecocrop_dataset_final_merged.csv'\n")
+cat("======================================================================\n")
+cat("======================================================================\n")
+```
+
+```{r}
+library(tidyverse)
+
+# Asumsikan 'df_final' adalah dataset hasil merge kamu
+# Jika dibaca dari file: df_final <- read_csv("ecocrop_dataset_final_merged.csv", col_types = cols(.default = "c"))
+
+cat("======================================================================\n")
+cat("      REKAPITULASI NILAI NA & 'UNSPECIFIED' PER KOLOM DATASET FINAL    \n")
+cat("======================================================================\n\n")
+
+# Hitung jumlah NA dan Unspecified untuk tiap kolom
+ringkasan_missing <- df_final %>%
+  summarise(across(everything(), list(
+    na_count = ~ sum(is.na(.x)),
+    unspec_count = ~ sum(str_to_lower(trimws(as.character(.x))) == "unspecified", na.rm = TRUE)
+  ))) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Kolom", ".value"),
+    names_pattern = "(.*)_(na_count|unspec_count)"
+  ) %>%
+  mutate(
+    Total_Kosong = na_count + unspec_count,
+    Persen_Kosong = round((Total_Kosong / nrow(df_final)) * 100, 2)
+  ) %>%
+  rename(
+    Jumlah_NA = na_count,
+    Jumlah_Unspecified = unspec_count
+  ) %>%
+  arrange(desc(Total_Kosong))
+
+# Tampilkan semua kolom
+print(as.data.frame(ringkasan_missing), row.names = FALSE)
+```
+
+
+
