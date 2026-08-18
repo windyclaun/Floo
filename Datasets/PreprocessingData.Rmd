@@ -383,5 +383,54 @@ ringkasan_missing <- df_final %>%
 print(as.data.frame(ringkasan_missing), row.names = FALSE)
 ```
 
+```{r}
+library(tidyverse)
+
+# 1. Cek kombinasi teks unik yang ada di dataset
+cat("=== 12 KOMBINASI KATA UNIK & FREKUENSINYA ===\n")
+df_final %>%
+  count(Plant.attributes, sort = TRUE) %>%
+  print(n = 20)
+
+# 2. Cek 5 kategori dasar setelah dipisahkan komanya
+cat("\n=== 5 KELOMPOK DASAR SETELAH DIPISAHKAN ===\n")
+df_final %>%
+  filter(!is.na(Plant.attributes)) %>%
+  separate_rows(Plant.attributes, sep = ",\\s*") %>%
+  count(Plant.attributes, sort = TRUE)
+```
+
+```{r}
+library(tidyverse)
+
+cat("======================================================================\n")
+cat("      FILTER DATASET: TANAMAN DENGAN ATTRIBUTE 'grown on small scale'   \n")
+cat("======================================================================\n\n")
+
+# 1. BACA DATASET MERGE TERAKHIR (atau gunakan df_final dari memory)
+df_final <- read_csv("ecocrop_dataset_final_merged.csv", col_types = cols(.default = "c"))
+
+# 2. FILTER DATA MENGGUNAKAN str_detect()
+df_small_scale <- df_final %>%
+  filter(str_detect(Plant.attributes, "grown on small scale"))
+
+# 3. TAMPILKAN MATRIKS DIMENSI SEBELUM DAN SESUDAH FILTER
+cat(" - Dimensi Awal Dataset Merged     :", paste(dim(df_final), collapse = " x "), "\n")
+cat(" - Dimensi Setelah Filtered        :", paste(dim(df_small_scale), collapse = " x "), "\n")
+cat(" - Jumlah Tanaman Terfilter        :", nrow(df_small_scale), "baris\n\n")
+
+# 4. CEK RINCIAN KOMBINASI YANG TERMASUK DI DALAMNYA
+cat("=== Rincian Kombinasi 'grown on small scale' yang Masuk ke Dataset Baru ===\n")
+print(df_small_scale %>% count(Plant.attributes, sort = TRUE))
+
+# 5. SIMPAN DATASET BARU
+write_csv(df_small_scale, "ecocrop_small_scale.csv")
+
+cat("\n======================================================================\n")
+cat("Dataset berhasil difilter dan disimpan ke: 'ecocrop_small_scale.csv'\n")
+cat("======================================================================\n")
+```
+
+
 
 
