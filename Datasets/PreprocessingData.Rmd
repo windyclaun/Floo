@@ -403,32 +403,66 @@ df_final %>%
 ```{r}
 library(tidyverse)
 
-cat("======================================================================\n")
-cat("      FILTER DATASET: TANAMAN DENGAN ATTRIBUTE 'grown on small scale'   \n")
-cat("======================================================================\n\n")
+# 1. BACA DATASET SMALL SCALE
+df <- read_csv("ecocrop_small_scale.csv", col_types = cols(.default = "c"))
 
-# 1. BACA DATASET MERGE TERAKHIR (atau gunakan df_final dari memory)
-df_final <- read_csv("ecocrop_dataset_final_merged.csv", col_types = cols(.default = "c"))
+# 2. KONVERSI KOLOM MANDATORY & OPTIMAL KE NUMERIK
+mandatory_num <- c(
+  "Temp_Abs_Min", "Temp_Abs_Max", "temp_opt_min", "Temp_Opt_Max",
+  "Rain_Abs_Min", "Rain_Abs_Max", "Rain_Opt_Min", "Rain_Opt_Max",
+  "Alt_Abs_Min",  "Alt_Abs_Max",  "Alt_Opt_Min",  "Alt_Opt_Max",
+  "pH_Abs_Min",   "pH_Abs_Max",   "pH_Opt_Min",   "pH_Opt_Max"
+)
 
-# 2. FILTER DATA MENGGUNAKAN str_detect()
-df_small_scale <- df_final %>%
-  filter(str_detect(Plant.attributes, "grown on small scale"))
+df_clean <- df %>%
+  mutate(across(all_of(mandatory_num), ~ as.numeric(.x)))
 
-# 3. TAMPILKAN MATRIKS DIMENSI SEBELUM DAN SESUDAH FILTER
-cat(" - Dimensi Awal Dataset Merged     :", paste(dim(df_final), collapse = " x "), "\n")
-cat(" - Dimensi Setelah Filtered        :", paste(dim(df_small_scale), collapse = " x "), "\n")
-cat(" - Jumlah Tanaman Terfilter        :", nrow(df_small_scale), "baris\n\n")
+# 3. PENANGANAN MANDATORY PARAMETERS
+df_clean <- df_clean %>%
+  # A. Alt_Abs_Min: Isi NA dengan 0 (Permukaan laut)
+  mutate(Alt_Abs_Min = ifelse(is.na(Alt_Abs_Min), 0, Alt_Abs_Min)) %>%
+  
+  # B. Fallback 1: Jika Absolut NA, gunakan nilai Optimal
+  mutate(
+    Temp_Abs_Min = ifelse(is.na(Temp_Abs_Min), temp_opt_min, Temp_Abs_Min),
+    Temp_Abs_Max = ifelse(is.na(Temp_Abs_Max), Temp_Opt_Max, Temp_Abs_Max),
+    Rain_Abs_Min = ifelse(is.na(Rain_Abs_Min), Rain_Opt_Min, Rain_Abs_Min),
+    Rain_Abs_Max = ifelse(is.na(Rain_Abs_Max), Rain_Opt_Max, Rain_Abs_Max),
+    pH_Abs_Min   = ifelse(is.na(pH_Abs_Min),   pH_Opt_Min,   pH_Abs_Min),
+    pH_Abs_Max   = ifelse(is.na(pH_Abs_Max),   pH_Opt_Max,   pH_Abs_Max)
+  ) %>%
+  
+  # C. Fallback 2: Jika masih NA, gunakan Median per Category
+  group_by(Category) %>%
+  mutate(across(all_of(mandatory_num), ~ ifelse(is.na(.x), median(.x, na.rm = TRUE), .x))) %>%
+  ungroup() %>%
+  
+  # D. Fallback 3: Median Global jika 1 Kategori NA semua
+  mutate(across(all_of(mandatory_num), ~ ifelse(is.na(.x), median(.x, na.rm = TRUE), .x)))
 
-# 4. CEK RINCIAN KOMBINASI YANG TERMASUK DI DALAMNYA
-cat("=== Rincian Kombinasi 'grown on small scale' yang Masuk ke Dataset Baru ===\n")
-print(df_small_scale %>% count(Plant.attributes, sort = TRUE))
+# 4. VERIFIKASI TIDAK ADA NA DI MANDATORY PARAMETER
+cat("=== Sisa NA pada Mandatory Parameters ===\n")
+print(colSums(is.na(df_clean[c("Temp_Abs_Min", "Temp_Abs_Max", "Rain_Abs_Min", "Rain_Abs_Max", "Alt_Abs_Min", "Alt_Abs_Max", "pH_Abs_Min", "pH_Abs_Max")])))
 
-# 5. SIMPAN DATASET BARU
-write_csv(df_small_scale, "ecocrop_small_scale.csv")
+# SIMPAN DATASET CLEAN UNTUK MODEL RANKING
+write_csv(df_clean, "ecocrop_small_scale_ready_ranking.csv")
+cat("\nDataset siap pakai disimpan ke: 'ecocrop_small_scale_ready_ranking.csv'\n")
+```
 
-cat("\n======================================================================\n")
-cat("Dataset berhasil difilter dan disimpan ke: 'ecocrop_small_scale.csv'\n")
-cat("======================================================================\n")
+```{r}
+# 1. Jumlah Baris dan Kolom
+dim(df)          # Menampilkan c(baris, kolom)
+nrow(df)         # Jumlah baris
+ncol(df)         # Jumlah kolom
+
+# 2. Ringkasan Nilai Kosong (NA)
+sum(is.na(df))                           # Total nilai NA di seluruh dataframe
+colSums(is.na(df))                       # Jumlah NA per kolom
+colMeans(is.na(df)) * 100                # Persentase NA per kolom
+
+# 3. Ringkasan Statistik & Struktur
+str(df)          # Tipe data tiap kolom
+summary(df)      # Ringkasan statistik (Min, Median, Mean, Max, NA)
 ```
 
 
