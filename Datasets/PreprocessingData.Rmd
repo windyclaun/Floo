@@ -465,6 +465,551 @@ str(df)          # Tipe data tiap kolom
 summary(df)      # Ringkasan statistik (Min, Median, Mean, Max, NA)
 ```
 
+```{r}
+library(tidyverse)
+
+# 1. Cek frekuensi masing-masing kategori
+df %>% count(Light_Abs_Min, sort = TRUE)
+df %>% count(Light_Abs_Max, sort = TRUE)
+
+# 2. Tabel silang (Cross-Tabulation) Min vs Max
+table(df$Light_Abs_Min, df$Light_Abs_Max, useNA = "always")
+```
+
+```{r}
+library(dplyr)
+
+cat("=========================================================\n")
+cat(" 🌿 FAO EcoCrop Engine R (6-Var + Multi-Tier Tie-Breaker)\n")
+cat("=========================================================\n")
+
+# 1. LOAD DATASET
+dataset_file <- if (file.exists("ecocrop_small_scale_ready_ranking.csv")) {
+  "ecocrop_small_scale_ready_ranking.csv"
+} else if (file.exists("crop_small_scale_clean.csv")) {
+  "crop_small_scale_clean.csv"
+} else {
+  stop("Error: Dataset file not found!")
+}
+
+cat(sprintf("-> Loading dataset: '%s'\n", dataset_file))
+df_crops <- read.csv(
+  dataset_file, 
+  stringsAsFactors = FALSE, 
+  na.strings = c("", "---", "-", "NA", "N/A", "null")
+)
+
+# 2. HELPER FUNCTIONS UNTUK RETRIEVAL DATA
+get_val <- function(row, ...) {
+  cols <- c(...)
+  for (c in cols) {
+    if (c %in% names(row) && !is.na(row[[c]]) && row[[c]] != "") {
+      return(row[[c]])
+    }
+  }
+  return(NA)
+}
+
+get_num <- function(row, ...) {
+  v <- get_val(row, ...)
+  if (is.na(v)) return(NA)
+  return(suppressWarnings(as.numeric(as.character(v))))
+}
+
+# 3. HELPER METRIK TIE-BREAKER (KAPASITAS & KETAHANAN EKOLOGIS)
+
+# Menghitung jarak relatif input ke titik tengah optimal (0 = paling ideal/stabil)
+calc_opt_dist <- function(val, opt_min, opt_max) {
+  if (is.null(val) || is.na(val) || is.na(opt_min) || is.na(opt_max)) return(0)
+  mid_point <- (opt_min + opt_max) / 2
+  half_range <- max((opt_max - opt_min) / 2, 0.001)
+  return(abs(val - mid_point) / half_range)
+}
+
+# Menghitung lebar rentang optimal (makin lebar = makin tahan fluktuasi cuaca)
+calc_bandwidth <- function(opt_min, opt_max) {
+  if (is.na(opt_min) || is.na(opt_max)) return(0)
+  return(max(opt_max - opt_min, 0))
+}
+
+# Mengonversi kategori main_uses menjadi bobot numerik utilitas komoditas
+get_use_priority <- function(use_str) {
+  if (is.na(use_str) || use_str == "") return(1)
+  u <- tolower(use_str)
+  if (grepl("cereal|food|grain|vegetable|fruit|staple", u)) return(4) # Pangan Utama
+  if (grepl("industrial|beverage|oil|fiber|spices", u))    return(3) # Komersial/Industri
+  if (grepl("forage|pasture|fodder", u))                  return(2) # Pakan Ternak
+  return(1)                                                          # Hias / Lainnya
+}
+
+# 4. FAO TRAPEZOIDAL MEMBERSHIP FUNCTION (NUMERIK)
+fao_membership <- function(val, abs_min, opt_min, opt_max, abs_max) {
+  if (is.null(val) || is.na(val)) return(1.0)
+  if (is.na(opt_min) || is.na(opt_max)) return(1.0)
+  
+  abs_min <- ifelse(is.na(abs_min) || abs_min >= opt_min, opt_min - 4.0, abs_min)
+  abs_max <- ifelse(is.na(abs_max) || abs_max <= opt_max, opt_max + 5.0, abs_max)
+  
+  if (val < abs_min || val > abs_max) return(0.0)
+  if (val >= opt_min && val <= opt_max) return(1.0)
+  if (val >= abs_min && val < opt_min) return((val - abs_min) / (opt_min - abs_min))
+  if (val > opt_max && val <= abs_max) return((abs_max - val) / (abs_max - opt_max))
+  return(0.0)
+}
+
+# 5. LIGHT INTENSITY MEMBERSHIP FUNCTION (KATEGORIKAL)
+fao_light_membership <- function(user_light, crop_light) {
+  if (is.null(user_light) || is.na(user_light) || user_light == "") return(1.0)
+  if (is.null(crop_light) || is.na(crop_light) || crop_light == "") return(1.0)
+  
+  u <- tolower(trimws(user_light))
+  c <- tolower(trimws(crop_light))
+  
+  if (u == c || grepl(u, c, fixed = TRUE) || grepl(c, u, fixed = TRUE)) return(1.0)
+  
+  bright_terms <- c("very bright", "clear skies", "full sun", "bright")
+  shade_terms  <- c("light shade", "cloudy skies", "partial shade", "shade")
+  
+  u_is_bright <- any(sapply(bright_terms, function(x) grepl(x, u)))
+  c_is_bright <- any(sapply(bright_terms, function(x) grepl(x, c)))
+  u_is_shade  <- any(sapply(shade_terms,  function(x) grepl(x, u)))
+  c_is_shade  <- any(sapply(shade_terms,  function(x) grepl(x, c)))
+  
+  if (u_is_bright && c_is_bright) return(0.90)
+  if (u_is_shade  && c_is_shade)  return(0.85)
+  if ((u_is_bright && c_is_shade) || (u_is_shade && c_is_bright)) return(0.50)
+  
+  return(0.30)
+}
+
+# 6. ENGINE REKOMENDASI LENGKAP INTEGRASI TIE-BREAKER
+recommend_pure_real_data <- function(user_temp  = NULL, 
+                                     user_rain  = NULL, 
+                                     user_ph    = NULL, 
+                                     user_alt   = NULL, 
+                                     user_light = NULL, 
+                                     user_lat   = NULL, 
+                                     top_n      = 3) {
+  results <- list()
+  
+  for (i in 1:nrow(df_crops)) {
+    row <- df_crops[i, ]
+    
+    # Extract numerical parameters
+    t_opt_min <- get_num(row, "temp_opt_min", "Temp_Opt_Min")
+    t_opt_max <- get_num(row, "Temp_Opt_Max", "temp_opt_max")
+    t_abs_min <- get_num(row, "Temp_Abs_Min", "temp_abs_min")
+    t_abs_max <- get_num(row, "Temp_Abs_Max", "temp_abs_max")
+    
+    r_opt_min <- get_num(row, "Rain_Opt_Min", "rain_opt_min")
+    r_opt_max <- get_num(row, "Rain_Opt_Max", "rain_opt_max")
+    r_abs_min <- get_num(row, "Rain_Abs_Min", "rain_abs_min")
+    r_abs_max <- get_num(row, "Rain_Abs_Max", "rain_abs_max")
+    
+    p_opt_min <- get_num(row, "pH_Opt_Min", "ph_opt_min")
+    p_opt_max <- get_num(row, "pH_Opt_Max", "ph_opt_max")
+    p_abs_min <- get_num(row, "pH_Abs_Min", "ph_abs_min")
+    p_abs_max <- get_num(row, "pH_Abs_Max", "ph_abs_max")
+    
+    a_opt_min <- get_num(row, "Alt_Opt_Min", "alt_opt_min")
+    a_opt_max <- get_num(row, "Alt_Opt_Max", "alt_opt_max")
+    a_abs_min <- get_num(row, "Alt_Abs_Min", "alt_abs_min")
+    a_abs_max <- get_num(row, "Alt_Abs_Max", "alt_abs_max")
+    
+    l_opt_min <- get_num(row, "Lat_Opt_Min", "lat_opt_min")
+    l_opt_max <- get_num(row, "Lat_Opt_Max", "lat_opt_max")
+    l_abs_min <- get_num(row, "Lat_Abs_Min", "lat_abs_min")
+    l_abs_max <- get_num(row, "Lat_Abs_Max", "lat_abs_max")
+    
+    crop_light <- get_val(row, "Light_Opt_Min", "light_opt", "Light_Opt_Max")
+    main_uses  <- get_val(row, "Main_use_aggregated", "use.main", "main_uses")
+    
+    scores <- c()
+    
+    # 1. Temperature Suitability
+    s_t <- if (!is.null(user_temp) && !is.na(user_temp)) {
+      fao_membership(user_temp, t_abs_min, t_opt_min, t_opt_max, t_abs_max)
+    } else { 1.0 }
+    scores["temp"] <- s_t
+    
+    # 2. Rainfall Suitability
+    s_r <- if (!is.null(user_rain) && !is.na(user_rain)) {
+      fao_membership(user_rain, r_abs_min, r_opt_min, r_opt_max, r_abs_max)
+    } else { 1.0 }
+    scores["rain"] <- s_r
+    
+    # 3. pH Suitability
+    s_p <- if (!is.null(user_ph) && !is.na(user_ph)) {
+      fao_membership(user_ph, p_abs_min, p_opt_min, p_opt_max, p_abs_max)
+    } else { 1.0 }
+    scores["ph"] <- s_p
+    
+    # 4. Altitude Suitability
+    s_a <- if (!is.null(user_alt) && !is.na(user_alt)) {
+      fao_membership(user_alt, a_abs_min, a_opt_min, a_opt_max, a_abs_max)
+    } else { 1.0 }
+    scores["alt"] <- s_a
+    
+    # 5. Light Intensity Suitability
+    s_l <- if (!is.null(user_light) && !is.na(user_light) && user_light != "") {
+      fao_light_membership(user_light, crop_light)
+    } else { 1.0 }
+    scores["light"] <- s_l
+
+    # 6. Latitude Suitability
+    if (!is.null(user_lat) && !is.na(user_lat)) {
+      user_lat_abs <- abs(user_lat)
+      l_opt_min_f <- ifelse(is.na(l_opt_min), 0, l_opt_min)
+      l_opt_max_f <- ifelse(is.na(l_opt_max), ifelse(is.na(l_abs_max), 35, l_abs_max), l_opt_max)
+      l_abs_min_f <- ifelse(is.na(l_abs_min), 0, l_abs_min)
+      l_abs_max_f <- ifelse(is.na(l_abs_max), l_opt_max_f + 10, l_abs_max)
+      
+      s_lat <- fao_membership(user_lat_abs, l_abs_min_f, l_opt_min_f, l_opt_max_f, l_abs_max_f)
+      scores["lat"] <- s_lat
+    } else {
+      s_lat <- 1.0
+    }
+    
+    # Geometric Mean LSI Score
+    lsi <- if (length(scores) > 0) {
+      (prod(scores)) ^ (1 / length(scores)) * 100.0
+    } else { 100.0 }
+    
+    fao_class <- if (lsi >= 85.0) {
+      "S1 (Highly Suitable)"
+    } else if (lsi >= 60.0) {
+      "S2 (Moderately Suitable)"
+    } else if (lsi >= 40.0) {
+      "S3 (Marginally Suitable)"
+    } else {
+      "N (Not Suitable)"
+    }
+    
+    if (lsi > 0) {
+      # Hitung indikator tie-breaker
+      d_temp <- calc_opt_dist(user_temp, t_opt_min, t_opt_max)
+      d_rain <- calc_opt_dist(user_rain, r_opt_min, r_opt_max)
+      d_ph   <- calc_opt_dist(user_ph,   p_opt_min, p_opt_max)
+      d_alt  <- calc_opt_dist(user_alt,  a_opt_min, a_opt_max)
+      
+      total_opt_dist <- d_temp + d_rain + d_ph + d_alt
+      
+      bw_temp <- calc_bandwidth(t_opt_min, t_opt_max)
+      bw_rain <- calc_bandwidth(r_opt_min, r_opt_max)
+      opt_bandwidth  <- bw_temp + (bw_rain / 100) # Normalisasi skala rain
+      
+      use_rank <- get_use_priority(main_uses)
+      
+      crop_code   <- get_val(row, "crop_code")
+      species     <- get_val(row, "species")
+      family      <- get_val(row, "Family_Clean", "Family", "family")
+      life_form   <- get_val(row, "Life.form", "life_form")
+      common_name <- get_val(row, "Common_names", "common_names")
+      
+      results[[length(results) + 1]] <- data.frame(
+        crop_code      = ifelse(is.na(crop_code), "-", as.character(crop_code)),
+        species        = ifelse(is.na(species), "-", species),
+        family         = ifelse(is.na(family), "N/A", family),
+        life_form      = ifelse(is.na(life_form), "-", life_form),
+        lsi_raw        = lsi,              # Tie-breaker 1: Presisi desimal LSI
+        total_opt_dist = total_opt_dist,  # Tie-breaker 2: Jarak ke titik tengah optimal
+        opt_bandwidth  = opt_bandwidth,   # Tie-breaker 3: Lebar rentang toleransi
+        use_rank       = use_rank,        # Tie-breaker 4: Utilitas komoditas pangan
+        lsi_score      = round(lsi, 1),
+        fao_class      = fao_class,
+        s_temp_pct     = paste0(round(s_t * 100), "%"),
+        s_rain_pct     = paste0(round(s_r * 100), "%"),
+        s_ph_pct       = paste0(round(s_p * 100), "%"),
+        s_alt_pct      = paste0(round(s_a * 100), "%"),
+        s_light_pct    = paste0(round(s_l * 100), "%"),
+        s_lat_pct      = paste0(round(s_lat * 100), "%"),
+        crop_light_req = ifelse(is.na(crop_light), "unspecified", crop_light),
+        main_uses      = ifelse(is.na(main_uses), "-", main_uses),
+        common_names   = ifelse(is.na(common_name), "-", common_name),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  if (length(results) == 0) return(data.frame())
+  
+  # 7. EXECUTE MULTI-TIER TIE-BREAKER SORTING
+  res_df <- do.call(rbind, results) %>%
+    arrange(
+      desc(lsi_raw),      # Prioritas 1: Skor LSI paling presisi
+      total_opt_dist,     # Prioritas 2: Paling mendekati pusat rentang optimal (paling stabil)
+      desc(opt_bandwidth),# Prioritas 3: Rentang optimal paling luas (paling toleran)
+      desc(use_rank),     # Prioritas 4: Tanaman pangan/komersial utama didahulukan
+      species             # Prioritas 5: Alfabetis nama spesies
+    ) %>%
+    select(-lsi_raw, -total_opt_dist, -opt_bandwidth, -use_rank) %>% # Hapus kolom helper
+    head(top_n)
+  
+  return(res_df)
+}
+
+# ==============================================================================
+# EXECUTE TEST EVALUATION (Saring Top 3 Terbaik)
+# ==============================================================================
+cat("\n[User Input] Temp: 28°C | Rain: 1800 mm | pH: 6.5 | Alt: 450 m | Light: 'very bright' | Lat: -6.2°\n\n")
+
+top_3_recs <- recommend_pure_real_data(
+  user_temp  = 28, 
+  user_rain  = 1800, 
+  user_ph    = 6.5, 
+  user_alt   = 450, 
+  user_light = "very bright", 
+  user_lat   = -6.2,
+  top_n      = 100
+)
+
+print(top_3_recs %>% select(lsi_score, fao_class, species, family, s_temp_pct, s_rain_pct, s_ph_pct, s_alt_pct, s_light_pct, s_lat_pct, main_uses))
+```
+
+```{r}
+library(dplyr)
+
+cat("=========================================================\n")
+cat(" 🌿 FAO EcoCrop Deterministic Engine R (Extended 6-Var)  \n")
+cat("=========================================================\n")
+
+# 1. LOAD DATASET
+dataset_file <- if (file.exists("ecocrop_small_scale_ready_ranking.csv")) {
+  "ecocrop_small_scale_ready_ranking.csv"
+} else if (file.exists("crop_small_scale_clean.csv")) {
+  "crop_small_scale_clean.csv"
+} else {
+  stop("Error: Dataset file not found!")
+}
+
+cat(sprintf("-> Loading dataset: '%s'\n", dataset_file))
+df_crops <- read.csv(
+  dataset_file, 
+  stringsAsFactors = FALSE, 
+  na.strings = c("", "---", "-", "NA", "N/A", "null")
+)
+
+# 2. HELPER FUNCTIONS UNTUK RETRIEVAL KOLOM
+get_val <- function(row, ...) {
+  cols <- c(...)
+  for (c in cols) {
+    if (c %in% names(row) && !is.na(row[[c]]) && row[[c]] != "") {
+      return(row[[c]])
+    }
+  }
+  return(NA)
+}
+
+get_num <- function(row, ...) {
+  v <- get_val(row, ...)
+  if (is.na(v)) return(NA)
+  return(suppressWarnings(as.numeric(as.character(v))))
+}
+
+# 3. FAO TRAPEZOIDAL MEMBERSHIP FUNCTION (NUMERIK)
+fao_membership <- function(val, abs_min, opt_min, opt_max, abs_max) {
+  if (is.null(val) || is.na(val)) return(1.0)
+  if (is.na(opt_min) || is.na(opt_max)) return(1.0)
+  
+  abs_min <- ifelse(is.na(abs_min) || abs_min >= opt_min, opt_min - 4.0, abs_min)
+  abs_max <- ifelse(is.na(abs_max) || abs_max <= opt_max, opt_max + 5.0, abs_max)
+  
+  if (val < abs_min || val > abs_max) return(0.0)
+  if (val >= opt_min && val <= opt_max) return(1.0)
+  if (val >= abs_min && val < opt_min) return((val - abs_min) / (opt_min - abs_min))
+  if (val > opt_max && val <= abs_max) return((abs_max - val) / (abs_max - opt_max))
+  return(0.0)
+}
+
+# 4. LIGHT INTENSITY MEMBERSHIP FUNCTION (KATEGORIKAL)
+fao_light_membership <- function(user_light, crop_light) {
+  if (is.null(user_light) || is.na(user_light) || user_light == "") return(1.0)
+  if (is.null(crop_light) || is.na(crop_light) || crop_light == "") return(1.0)
+  
+  u <- tolower(trimws(user_light))
+  c <- tolower(trimws(crop_light))
+  
+  if (u == c || grepl(u, c, fixed = TRUE) || grepl(c, u, fixed = TRUE)) return(1.0)
+  
+  bright_terms <- c("very bright", "clear skies", "full sun", "bright")
+  shade_terms  <- c("light shade", "cloudy skies", "partial shade", "shade")
+  
+  u_is_bright <- any(sapply(bright_terms, function(x) grepl(x, u)))
+  c_is_bright <- any(sapply(bright_terms, function(x) grepl(x, c)))
+  u_is_shade  <- any(sapply(shade_terms,  function(x) grepl(x, u)))
+  c_is_shade  <- any(sapply(shade_terms,  function(x) grepl(x, c)))
+  
+  if (u_is_bright && c_is_bright) return(0.90)
+  if (u_is_shade  && c_is_shade)  return(0.85)
+  if ((u_is_bright && c_is_shade) || (u_is_shade && c_is_bright)) return(0.50)
+  
+  return(0.30)
+}
+
+# 5. REKOMENDASI ENGINE DENGAN MULTI-CRITERIA TIE-BREAKER
+recommend_pure_real_data <- function(user_temp  = NULL, 
+                                     user_rain  = NULL, 
+                                     user_ph    = NULL, 
+                                     user_alt   = NULL, 
+                                     user_light = NULL, 
+                                     user_lat   = NULL, 
+                                     top_n      = 10) {
+  results <- list()
+  
+  for (i in 1:nrow(df_crops)) {
+    row <- df_crops[i, ]
+    
+    # Extract numerical parameters
+    t_opt_min <- get_num(row, "temp_opt_min", "Temp_Opt_Min")
+    t_opt_max <- get_num(row, "Temp_Opt_Max", "temp_opt_max")
+    t_abs_min <- get_num(row, "Temp_Abs_Min", "temp_abs_min")
+    t_abs_max <- get_num(row, "Temp_Abs_Max", "temp_abs_max")
+    
+    r_opt_min <- get_num(row, "Rain_Opt_Min", "rain_opt_min")
+    r_opt_max <- get_num(row, "Rain_Opt_Max", "rain_opt_max")
+    r_abs_min <- get_num(row, "Rain_Abs_Min", "rain_abs_min")
+    r_abs_max <- get_num(row, "Rain_Abs_Max", "rain_abs_max")
+    
+    p_opt_min <- get_num(row, "pH_Opt_Min", "ph_opt_min")
+    p_opt_max <- get_num(row, "pH_Opt_Max", "ph_opt_max")
+    p_abs_min <- get_num(row, "pH_Abs_Min", "ph_abs_min")
+    p_abs_max <- get_num(row, "pH_Abs_Max", "ph_abs_max")
+    
+    a_opt_min <- get_num(row, "Alt_Opt_Min", "alt_opt_min")
+    a_opt_max <- get_num(row, "Alt_Opt_Max", "alt_opt_max")
+    a_abs_min <- get_num(row, "Alt_Abs_Min", "alt_abs_min")
+    a_abs_max <- get_num(row, "Alt_Abs_Max", "alt_abs_max")
+    
+    l_opt_min <- get_num(row, "Lat_Opt_Min", "lat_opt_min")
+    l_opt_max <- get_num(row, "Lat_Opt_Max", "lat_opt_max")
+    l_abs_min <- get_num(row, "Lat_Abs_Min", "lat_abs_min")
+    l_abs_max <- get_num(row, "Lat_Abs_Max", "lat_abs_max")
+    
+    crop_light <- get_val(row, "Light_Opt_Min", "light_opt", "Light_Opt_Max")
+    
+    scores <- c()
+    
+    # 1. Temperature Suitability
+    s_t <- if (!is.null(user_temp) && !is.na(user_temp)) {
+      fao_membership(user_temp, t_abs_min, t_opt_min, t_opt_max, t_abs_max)
+    } else { 1.0 }
+    scores["temp"] <- s_t
+    
+    # 2. Rainfall Suitability
+    s_r <- if (!is.null(user_rain) && !is.na(user_rain)) {
+      fao_membership(user_rain, r_abs_min, r_opt_min, r_opt_max, r_abs_max)
+    } else { 1.0 }
+    scores["rain"] <- s_r
+    
+    # 3. pH Suitability
+    s_p <- if (!is.null(user_ph) && !is.na(user_ph)) {
+      fao_membership(user_ph, p_abs_min, p_opt_min, p_opt_max, p_abs_max)
+    } else { 1.0 }
+    scores["ph"] <- s_p
+    
+    # 4. Altitude Suitability
+    s_a <- if (!is.null(user_alt) && !is.na(user_alt)) {
+      fao_membership(user_alt, a_abs_min, a_opt_min, a_opt_max, a_abs_max)
+    } else { 1.0 }
+    scores["alt"] <- s_a
+    
+    # 5. Light Intensity Suitability
+    s_l <- if (!is.null(user_light) && !is.na(user_light) && user_light != "") {
+      fao_light_membership(user_light, crop_light)
+    } else { 1.0 }
+    scores["light"] <- s_l
+
+    # 6. Latitude Suitability
+    if (!is.null(user_lat) && !is.na(user_lat)) {
+      user_lat_abs <- abs(user_lat)
+      l_opt_min_f <- ifelse(is.na(l_opt_min), 0, l_opt_min)
+      l_opt_max_f <- ifelse(is.na(l_opt_max), ifelse(is.na(l_abs_max), 35, l_abs_max), l_opt_max)
+      l_abs_min_f <- ifelse(is.na(l_abs_min), 0, l_abs_min)
+      l_abs_max_f <- ifelse(is.na(l_abs_max), l_opt_max_f + 10, l_abs_max)
+      
+      s_lat <- fao_membership(user_lat_abs, l_abs_min_f, l_opt_min_f, l_opt_max_f, l_abs_max_f)
+      scores["lat"] <- s_lat
+    } else {
+      s_lat <- 1.0
+    }
+    
+    # Geometric Mean LSI Score
+    lsi <- if (length(scores) > 0) {
+      (prod(scores)) ^ (1 / length(scores)) * 100.0
+    } else { 100.0 }
+    
+    fao_class <- if (lsi >= 85.0) {
+      "S1 (Highly Suitable)"
+    } else if (lsi >= 60.0) {
+      "S2 (Moderately Suitable)"
+    } else if (lsi >= 40.0) {
+      "S3 (Marginally Suitable)"
+    } else {
+      "N (Not Suitable)"
+    }
+    
+    if (lsi > 0) {
+      crop_code   <- get_val(row, "crop_code")
+      species     <- get_val(row, "species")
+      family      <- get_val(row, "Family_Clean", "Family", "family")
+      life_form   <- get_val(row, "Life.form", "life_form")
+      main_uses   <- get_val(row, "Main_use_aggregated", "use.main", "main_uses")
+      common_name <- get_val(row, "Common_names", "common_names")
+      
+      results[[length(results) + 1]] <- data.frame(
+        crop_code      = ifelse(is.na(crop_code), "-", as.character(crop_code)),
+        species        = ifelse(is.na(species), "-", species),
+        family         = ifelse(is.na(family), "N/A", family),
+        life_form      = ifelse(is.na(life_form), "-", life_form),
+        lsi_raw        = lsi,                        # Kriteria Tie-Breaker 1: Nilai presisi desimal
+        lsi_score      = round(lsi, 1),              # Nilai tampilan persentase
+        fao_class      = fao_class,
+        s_temp_pct     = paste0(round(s_t * 100), "%"),
+        s_rain_pct     = paste0(round(s_r * 100), "%"),
+        s_ph_pct       = paste0(round(s_p * 100), "%"),
+        s_alt_pct      = paste0(round(s_a * 100), "%"),
+        s_light_pct    = paste0(round(s_l * 100), "%"),
+        s_lat_pct      = paste0(round(s_lat * 100), "%"),
+        crop_light_req = ifelse(is.na(crop_light), "unspecified", crop_light),
+        main_uses      = ifelse(is.na(main_uses), "-", main_uses),
+        common_names   = ifelse(is.na(common_name), "-", common_name),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  if (length(results) == 0) return(data.frame())
+  
+  # EXECUTE MULTI-CRITERIA SORTING / TIE-BREAKER
+  res_df <- do.call(rbind, results) %>%
+    arrange(
+      desc(lsi_raw),   # Prioritas 1: Skor presisi murni sebelum rounding
+      species          # Prioritas 2: Alfabetis spesies jika lsi_raw identik
+    ) %>%
+    select(-lsi_raw) %>%
+    head(top_n)
+  
+  return(res_df)
+}
+
+# ==============================================================================
+# EXECUTE TEST EVALUATION
+# ==============================================================================
+cat("\n[User Input] Temp: 28°C | Rain: 1800 mm | pH: 6.5 | Alt: 450 m | Light: 'very bright' | Lat: -6.2°\n\n")
+
+recs_r <- recommend_pure_real_data(
+  user_temp  = 28, 
+  user_rain  = 1800, 
+  user_ph    = 6.5, 
+  user_alt   = 450, 
+  user_light = "very bright", 
+  user_lat   = -6.2,
+  top_n      = 100
+)
+
+print(recs_r %>% select(lsi_score, fao_class, species, family, s_temp_pct, s_rain_pct, s_ph_pct, s_alt_pct, s_light_pct, s_lat_pct, main_uses))
+```
+
 
 
 
