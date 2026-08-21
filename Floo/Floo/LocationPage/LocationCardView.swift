@@ -37,7 +37,7 @@ struct LocationCardView: View {
                 endPoint: .trailing
             )
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "thermometer.medium")
                         .font(.system(size: 26, weight: .regular))
@@ -69,7 +69,7 @@ struct LocationCardView: View {
             .padding(.leading, 24)
             .padding(.top, 24)
             .padding(.bottom, 24)
-            .frame(width: width, height: height, alignment: .leading)
+            .frame(width: width, height: height, alignment: .topLeading)
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
