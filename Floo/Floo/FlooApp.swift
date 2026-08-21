@@ -9,6 +9,10 @@ import SwiftUI
 
 @main
 struct FlooApp: App {
+    init() {
+        AppFont.registerFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
