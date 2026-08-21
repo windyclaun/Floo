@@ -8,26 +8,7 @@
 import SwiftUI
 
 struct LocationView: View {
-    private let locations: [LocationCardData] = [
-        LocationCardData(
-            temperature: "30°C",
-            title: "Aulia Tandur A",
-            address: "Raja Ampat, West Papua",
-            idealTemperature: "Ideal: 20°C - 30°C"
-        ),
-        LocationCardData(
-            temperature: "26°C",
-            title: "Windy Tandur",
-            address: "Tanah Abang, Jakarta",
-            idealTemperature: "Ideal: 20°C - 30°C"
-        ),
-        LocationCardData(
-            temperature: "24°C",
-            title: "Windy Tandur",
-            address: "Tabanan, Bali",
-            idealTemperature: "Ideal: 20°C - 30°C"
-        )
-    ]
+    private let location = LocationCardData.sample
 
     var body: some View {
         ZStack {
@@ -38,10 +19,10 @@ struct LocationView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     Text("Your Location")
                         .appTextStyle(.largeTitleBold, color: .appTextPrimary)
-                        .padding(.top, 88)
+                        .padding(.top, 20)
 
                     VStack(spacing: 18) {
-                        ForEach(locations) { location in
+                        ForEach(0..<3, id: \.self) { _ in
                             LocationCardView(location: location)
                         }
                     }

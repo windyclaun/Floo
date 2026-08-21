@@ -66,8 +66,8 @@ struct LocationCardView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
-            .padding(.leading, 25)
-            .padding(.top, 30)
+            .padding(.leading, 24)
+            .padding(.top, 24)
             .padding(.bottom, 24)
             .frame(width: width, height: height, alignment: .leading)
         }
@@ -92,14 +92,16 @@ struct LocationCardData: Identifiable {
     let idealTemperature: String
 }
 
-#Preview {
-    LocationCardView(
-        location: LocationCardData(
-            temperature: "26°C",
-            title: "Prabowo Tandur",
-            address: "Tanah Abang, Jakarta",
-            idealTemperature: "Ideal: 20°C - 30°C"
-        )
+extension LocationCardData {
+    static let sample = LocationCardData(
+        temperature: "26°C",
+        title: "Prabowo Tandur",
+        address: "Tanah Abang, Jakarta",
+        idealTemperature: "Ideal: 20°C - 30°C"
     )
-    .padding()
+}
+
+#Preview {
+    LocationCardView(location: .sample)
+        .padding()
 }
