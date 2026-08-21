@@ -15,6 +15,7 @@ struct ContentView: View {
                 .foregroundStyle(.tint)
             Text("Ini sudah plus jakarta")
                 .font(.appTitle)
+                .foregroundStyle(Color("AppAccent"))
         }
         .padding()
     }
